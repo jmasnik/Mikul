@@ -63,7 +63,7 @@ unsigned long servo_last;
 #define PWM_RESOLUTION 8
 #define PWM_FREQ 1000
 #define PIN_SERVO 12
-#define MOTOR_DEADBAND 8
+#define MOTOR_DEADBAND 12
 #define MOTOR_MIN_PWM 250
 
 // 7 radek obrazu o sirce 96px 
@@ -115,7 +115,7 @@ void ControllTask(void *parameter)
             memcpy(&mikul_controls, packet, sizeof(mikul_controls));
             
             // kde mame mit servo
-            servo_want = map(mikul_controls.servo, -100, 100, 40, 165); 
+            servo_want = map(mikul_controls.servo, -100, 100, 50, 165); 
 
             // blikani LED
             if(packet_rx_cnt % 20 == 0){
