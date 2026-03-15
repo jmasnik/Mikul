@@ -12,9 +12,13 @@
 
 #define PIN_LED 33
 #define PIN_LED_FLASH 4 
+#define PIN_BAT_ADC 2       // nefunguje, je to ADC2 a to nejde spolu s wifi, jedina moznost je asi GPIO33, na te je ale LED, musela by se odpajet 
 
 // interval mezi snimky
-#define PHOTO_DELAY 100
+#define PHOTO_DELAY 50
+
+// interval mezi daty
+#define DATA_DELAY 1000
 
 #define CAMERA_MODEL_AI_THINKER
 
@@ -48,6 +52,7 @@ ESP32PWM pwm2;
 Servo servo;
 
 TaskHandle_t ControllTaskHandle = NULL;
+TaskHandle_t CameraTaskHandle = NULL;
 
 int servo_want = 90;
 int servo_have = 90;
@@ -163,6 +168,55 @@ void ControllTask(void *parameter)
   }
 }
 
+
+void CameraTask(void *parameter)
+{
+    unsigned long millis_act;
+   char buff[100];
+   size_t outlen;
+   uint8_t i;
+   uint8_t head[2];
+   uint8_t packet[1500];
+
+   
+
+
+    while(1){
+
+        millis_act = millis();
+
+        // posilani obrazu v intervalu
+        if ((millis_act - lastTime) >= PHOTO_DELAY) {
+
+    //capture a frame
+   camera_fb_t *fb = esp_camera_fb_get();
+   if (fb) {
+      // prvnich 14 radek ignorujeme, pak 70 radek (v jednom paketu je 7 radek)
+      for(i = 0; i < 10; i++){
+        packet[0] = 0xF0;
+        packet[1] = i;
+        packet[2] = WiFi.RSSI();
+
+        memcpy(packet + 3, fb->buf + ((i + 2) * IMG_PACKET_LEN), IMG_PACKET_LEN);
+
+        Udp.beginPacket("192.168.4.1", REMOTE_UDP_PORT);
+        Udp.write(packet, IMG_PACKET_LEN + 3); 
+        Udp.endPacket();
+
+        vTaskDelay(4 / portTICK_PERIOD_MS);
+      }
+   }
+
+  esp_camera_fb_return(fb);            
+
+            lastTime = millis_act;
+        }
+
+        // malej delay
+        vTaskDelay(1 / portTICK_PERIOD_MS);
+    }
+}
+
 /**
  * Rozne LED
  */
@@ -179,95 +233,107 @@ void setLedOff()
     digitalWrite(PIN_LED, HIGH);
 }
 
-void setup(){
-   char buff[100];
+/**
+ * Setup
+ */
+void setup()
+{
+    char buff[100];
+    sensor_t *cam_sensor;
 
-   recording = 0;
-   servo_last = 0;
+    recording = 0;
+    servo_last = 0;
 
-   //disable brownout detector
-   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);	
+    //disable brownout detector
+    WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);	
 
-   // pin mode
-   pinMode(PIN_LED, OUTPUT);
-   pinMode(PIN_LED_FLASH, OUTPUT);
+    // pin mode
+    pinMode(PIN_LED, OUTPUT);
+    pinMode(PIN_LED_FLASH, OUTPUT);
 
-   // mala cervena sviti pri low
-   setLedOff();   
+    // mala cervena sviti pri low
+    setLedOff();   
 
-   // velka bila sviti pri high, otazka jestli muze svitit dele, dost hreje
-   setFlashOff();   
+    // velka bila sviti pri high, otazka jestli muze svitit dele, dost hreje
+    setFlashOff();   
 
-   // seriak
-   Serial.begin(115200);
-   Serial.setDebugOutput(false);
-  
-   // msg
-   Serial.println("- Mikul v0.1 --------------------------------");   
+    // seriak
+    Serial.begin(115200);
+    Serial.setDebugOutput(false);
+    
+    // msg
+    Serial.println("- Mikul v0.2 --------------------------------");   
 
-	ESP32PWM::allocateTimer(0);
-	ESP32PWM::allocateTimer(1);
-	ESP32PWM::allocateTimer(2);
-	ESP32PWM::allocateTimer(3);
+        ESP32PWM::allocateTimer(0);
+        ESP32PWM::allocateTimer(1);
+        ESP32PWM::allocateTimer(2);
+        ESP32PWM::allocateTimer(3);
 
-    // nastaveni serva
-    servo.setPeriodHertz(50);
-    servo.attach(PIN_SERVO, 1000, 2000); 
+        // nastaveni serva
+        servo.setPeriodHertz(50);
+        servo.attach(PIN_SERVO, 1000, 2000); 
 
-    // nastaveni PWM
-    pwm1.attachPin(PIN_PWM1, PWM_FREQ, PWM_RESOLUTION);
-    pwm2.attachPin(PIN_PWM2, PWM_FREQ, PWM_RESOLUTION);
+        // nastaveni PWM
+        pwm1.attachPin(PIN_PWM1, PWM_FREQ, PWM_RESOLUTION);
+        pwm2.attachPin(PIN_PWM2, PWM_FREQ, PWM_RESOLUTION);
 
-    pwm1.writeScaled(0);
-    pwm2.writeScaled(0);
+        pwm1.writeScaled(0);
+        pwm2.writeScaled(0);
 
-   // camera config
-   camera_config_t config;
-   config.ledc_channel = LEDC_CHANNEL_0;
-   config.ledc_timer = LEDC_TIMER_0;
-   config.pin_d0 = Y2_GPIO_NUM;
-   config.pin_d1 = Y3_GPIO_NUM;
-   config.pin_d2 = Y4_GPIO_NUM;
-   config.pin_d3 = Y5_GPIO_NUM;
-   config.pin_d4 = Y6_GPIO_NUM;
-   config.pin_d5 = Y7_GPIO_NUM;
-   config.pin_d6 = Y8_GPIO_NUM;
-   config.pin_d7 = Y9_GPIO_NUM;
-   config.pin_xclk = XCLK_GPIO_NUM;
-   config.pin_pclk = PCLK_GPIO_NUM;
-   config.pin_vsync = VSYNC_GPIO_NUM;
-   config.pin_href = HREF_GPIO_NUM;
-   config.pin_sccb_sda = SIOD_GPIO_NUM;
-   config.pin_sccb_scl = SIOC_GPIO_NUM;
-   config.pin_pwdn = PWDN_GPIO_NUM;
-   config.pin_reset = RESET_GPIO_NUM;
-   config.xclk_freq_hz = 20000000;
-   //config.pixel_format = PIXFORMAT_RGB565; 
-   //config.pixel_format = PIXFORMAT_JPEG; 
-   config.pixel_format = PIXFORMAT_RGB565; 
-  
-   if(!psramFound()){
-      Serial.println("PSRAM not found!");
-      while(1){ }
-   }
+    // camera config
+    camera_config_t config;
+    config.ledc_channel = LEDC_CHANNEL_0;
+    config.ledc_timer = LEDC_TIMER_0;
+    config.pin_d0 = Y2_GPIO_NUM;
+    config.pin_d1 = Y3_GPIO_NUM;
+    config.pin_d2 = Y4_GPIO_NUM;
+    config.pin_d3 = Y5_GPIO_NUM;
+    config.pin_d4 = Y6_GPIO_NUM;
+    config.pin_d5 = Y7_GPIO_NUM;
+    config.pin_d6 = Y8_GPIO_NUM;
+    config.pin_d7 = Y9_GPIO_NUM;
+    config.pin_xclk = XCLK_GPIO_NUM;
+    config.pin_pclk = PCLK_GPIO_NUM;
+    config.pin_vsync = VSYNC_GPIO_NUM;
+    config.pin_href = HREF_GPIO_NUM;
+    config.pin_sccb_sda = SIOD_GPIO_NUM;
+    config.pin_sccb_scl = SIOC_GPIO_NUM;
+    config.pin_pwdn = PWDN_GPIO_NUM;
+    config.pin_reset = RESET_GPIO_NUM;
+    config.xclk_freq_hz = 20000000;
+    //config.pixel_format = PIXFORMAT_RGB565; 
+    //config.pixel_format = PIXFORMAT_JPEG; 
+    config.pixel_format = PIXFORMAT_RGB565; 
+    
+    if(!psramFound()){
+        Serial.println("PSRAM not found!");
+        while(1){ }
+    }
 
-   config.frame_size = FRAMESIZE_96X96;
-   config.jpeg_quality = 5;
-   config.fb_count = 1;
+    config.frame_size = FRAMESIZE_96X96;
+    config.jpeg_quality = 5;
+    config.fb_count = 1;
 
-   // Camera init
-   esp_err_t err = esp_camera_init(&config);
-   if (err != ESP_OK) {
-      Serial.printf("Camera init failed with error 0x%x", err);
-      Serial.println();
-   } else {
-      Serial.println("Camera init OK");
-   }
+    // Camera init
+    esp_err_t err = esp_camera_init(&config);
+    if (err != ESP_OK) {
+        Serial.printf("Camera init failed with error 0x%x", err);
+        Serial.println();
+    } else {
+        Serial.println("Camera init OK");
+    }
 
-   // Wifi STA
-   WiFi.mode(WIFI_STA);
-   WiFi.disconnect();
-   delay(100);
+    // trochu barevnejsi a kontrastnejsi obraz
+    cam_sensor = esp_camera_sensor_get();
+    cam_sensor->set_saturation(cam_sensor, 2);
+    cam_sensor->set_contrast(cam_sensor, 2);
+    cam_sensor->set_sharpness(cam_sensor, 2);
+    //cam_sensor->set_brightness(cam_sensor, 2);
+
+    // Wifi STA
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    delay(100);
 
    WiFi.begin("mController");
    Serial.println("mController / bez");
@@ -295,30 +361,66 @@ void setup(){
         &ControllTaskHandle,    // Task handle
         1                       // Core 1
     );  
+
+    // Task resici kameru
+    xTaskCreatePinnedToCore(
+        CameraTask,           // Task function
+        "CameraTask",         // Task name
+        100000,                  // Stack size (bytes)
+        NULL,                   // Parameters
+        1,                      // Priority
+        &CameraTaskHandle,    // Task handle
+        1                       // Core 1
+    );      
 }
 
 /**
  * Hlavni smycka
  */
-void loop(){
-
+void loop()
+{
+/*
     int packet_size;
     uint8_t packet[100];
     char buff[100];
     mikulControls mikul_controls;
     unsigned long millis_act;
+    int8_t rssi;
+    uint8_t data_cntr; 
+
+    unsigned long last_data;
+
+    last_data = 0;
+    data_cntr = 0;
 
     while(1){
 
         millis_act = millis();
 
-        // posilani v intervalu
+        // posilani obrazu v intervalu
         if ((millis_act - lastTime) >= PHOTO_DELAY) {
             liveCam();
             lastTime = millis_act;
         }
 
+        // posilani dat
+        if ((millis_act - last_data) >= DATA_DELAY) {
+            last_data = millis_act;
+
+            rssi = WiFi.RSSI();
+            packet[0] = 0xF1;
+            packet[1] = rssi;
+            packet[2] = data_cntr;
+
+            Udp.beginPacket("192.168.4.1", REMOTE_UDP_PORT);
+            Udp.write(packet, 3); 
+            Udp.endPacket();
+            
+            data_cntr++;
+        }
+
     }
+*/
 }
 
 /**
@@ -362,7 +464,7 @@ void liveCam(){
         Udp.write(packet, IMG_PACKET_LEN + 2); 
         Udp.endPacket();
 
-        delayMicroseconds(1);
+        delayMicroseconds(4);
       }
    }
 
