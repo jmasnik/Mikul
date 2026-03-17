@@ -15,10 +15,7 @@
 #define PIN_BAT_ADC 2       // nefunguje, je to ADC2 a to nejde spolu s wifi, jedina moznost je asi GPIO33, na te je ale LED, musela by se odpajet 
 
 // interval mezi snimky
-#define PHOTO_DELAY 50
-
-// interval mezi daty
-#define DATA_DELAY 1000
+#define PHOTO_DELAY 40
 
 #define CAMERA_MODEL_AI_THINKER
 
@@ -43,8 +40,6 @@ void setFlashOn();
 void setFlashOff();
 void setLedOn();
 void setLedOff();
-
-void liveCam();
 
 WiFiUDP Udp;
 ESP32PWM pwm1;
@@ -71,18 +66,23 @@ unsigned long servo_last;
 #define MOTOR_DEADBAND 12
 #define MOTOR_MIN_PWM 250
 
+// kolik pixelu dava kamera
+#define IMG_CAM_WIDTH       96
+
+// jakou sirku obrazu posilam
+#define IMG_OUT_WIDTH       96
+
+// o kolik orezavam
+#define IMG_CROP_SKIP       0
+
 // 7 radek obrazu o sirce 96px 
-#define IMG_PACKET_LEN 96 * 7 * 2
+#define IMG_PACKET_LEN      96 * 7 * 2
 
-unsigned long lastTime = 0;
+// kolik ma jedna radka co posilam
+#define IMG_LENGTH_LINE     IMG_OUT_WIDTH * 2
 
-unsigned char *img64;
-
-uint8_t recording;
-
-unsigned long pir_tm;
-
-//#define IMG64BUFF 500000
+// orez nahore - 14 prvnich radek pryc
+#define IMG_CROP_TOP        (IMG_CAM_WIDTH * 2 * 14) + (IMG_CROP_SKIP / 2)
 
 // packet s rizenim
 typedef struct mikulControls {
@@ -168,48 +168,58 @@ void ControllTask(void *parameter)
   }
 }
 
-
+/**
+ * Task ktery resi kameru a posilani obrazu z ni pres UDP
+ */
 void CameraTask(void *parameter)
 {
     unsigned long millis_act;
-   char buff[100];
-   size_t outlen;
-   uint8_t i;
-   uint8_t head[2];
-   uint8_t packet[1500];
-
-   
-
-
-    while(1){
-
+    uint8_t i;
+    uint8_t j;
+    uint8_t packet[1500];
+    uint8_t *ptr_fbuf;
+    uint8_t *ptr_pack;
+    unsigned long millis_last = 0;
+    
+    while(1)
+    {
         millis_act = millis();
 
         // posilani obrazu v intervalu
-        if ((millis_act - lastTime) >= PHOTO_DELAY) {
+        if ((millis_act - millis_last) >= PHOTO_DELAY) {
+            
+            //capture a frame
+            camera_fb_t *fb = esp_camera_fb_get();
+            if (fb) {
+                ptr_fbuf = fb->buf + IMG_CROP_TOP;
 
-    //capture a frame
-   camera_fb_t *fb = esp_camera_fb_get();
-   if (fb) {
-      // prvnich 14 radek ignorujeme, pak 70 radek (v jednom paketu je 7 radek)
-      for(i = 0; i < 10; i++){
-        packet[0] = 0xF0;
-        packet[1] = i;
-        packet[2] = WiFi.RSSI();
+                // prvnich 14 radek ignorujeme, pak 70 radek (v jednom paketu je 7 radek)
+                for(i = 0; i < 10; i++){
 
-        memcpy(packet + 3, fb->buf + ((i + 2) * IMG_PACKET_LEN), IMG_PACKET_LEN);
+                    // hlavicka packetu
+                    packet[0] = 0xF0;
+                    packet[1] = i;
+                    packet[2] = WiFi.RSSI();
 
-        Udp.beginPacket("192.168.4.1", REMOTE_UDP_PORT);
-        Udp.write(packet, IMG_PACKET_LEN + 3); 
-        Udp.endPacket();
+                    ptr_pack = packet + 3;
 
-        vTaskDelay(4 / portTICK_PERIOD_MS);
-      }
-   }
+                    //memcpy(packet + 3, fb->buf + ((i + 2) * IMG_PACKET_LEN), IMG_PACKET_LEN);
+                    for(j = 0; j < 7; j++){
+                        memcpy(ptr_pack, ptr_fbuf, IMG_LENGTH_LINE);
+                        ptr_fbuf += IMG_LENGTH_LINE + IMG_CROP_SKIP;
+                        ptr_pack += IMG_LENGTH_LINE;
+                    }
 
-  esp_camera_fb_return(fb);            
+                    Udp.beginPacket("192.168.4.1", REMOTE_UDP_PORT);
+                    Udp.write(packet, IMG_PACKET_LEN + 3); 
+                    Udp.endPacket();
 
-            lastTime = millis_act;
+                    vTaskDelay(3 / portTICK_PERIOD_MS);
+                }
+            }
+            esp_camera_fb_return(fb);            
+
+            millis_last = millis_act;
         }
 
         // malej delay
@@ -241,7 +251,6 @@ void setup()
     char buff[100];
     sensor_t *cam_sensor;
 
-    recording = 0;
     servo_last = 0;
 
     //disable brownout detector
@@ -264,21 +273,21 @@ void setup()
     // msg
     Serial.println("- Mikul v0.2 --------------------------------");   
 
-        ESP32PWM::allocateTimer(0);
-        ESP32PWM::allocateTimer(1);
-        ESP32PWM::allocateTimer(2);
-        ESP32PWM::allocateTimer(3);
+    ESP32PWM::allocateTimer(0);
+    ESP32PWM::allocateTimer(1);
+    ESP32PWM::allocateTimer(2);
+    ESP32PWM::allocateTimer(3);
 
-        // nastaveni serva
-        servo.setPeriodHertz(50);
-        servo.attach(PIN_SERVO, 1000, 2000); 
+    // nastaveni serva
+    servo.setPeriodHertz(50);
+    servo.attach(PIN_SERVO, 1000, 2000); 
 
-        // nastaveni PWM
-        pwm1.attachPin(PIN_PWM1, PWM_FREQ, PWM_RESOLUTION);
-        pwm2.attachPin(PIN_PWM2, PWM_FREQ, PWM_RESOLUTION);
+    // nastaveni PWM
+    pwm1.attachPin(PIN_PWM1, PWM_FREQ, PWM_RESOLUTION);
+    pwm2.attachPin(PIN_PWM2, PWM_FREQ, PWM_RESOLUTION);
 
-        pwm1.writeScaled(0);
-        pwm2.writeScaled(0);
+    pwm1.writeScaled(0);
+    pwm2.writeScaled(0);
 
     // camera config
     camera_config_t config;
@@ -379,48 +388,7 @@ void setup()
  */
 void loop()
 {
-/*
-    int packet_size;
-    uint8_t packet[100];
-    char buff[100];
-    mikulControls mikul_controls;
-    unsigned long millis_act;
-    int8_t rssi;
-    uint8_t data_cntr; 
 
-    unsigned long last_data;
-
-    last_data = 0;
-    data_cntr = 0;
-
-    while(1){
-
-        millis_act = millis();
-
-        // posilani obrazu v intervalu
-        if ((millis_act - lastTime) >= PHOTO_DELAY) {
-            liveCam();
-            lastTime = millis_act;
-        }
-
-        // posilani dat
-        if ((millis_act - last_data) >= DATA_DELAY) {
-            last_data = millis_act;
-
-            rssi = WiFi.RSSI();
-            packet[0] = 0xF1;
-            packet[1] = rssi;
-            packet[2] = data_cntr;
-
-            Udp.beginPacket("192.168.4.1", REMOTE_UDP_PORT);
-            Udp.write(packet, 3); 
-            Udp.endPacket();
-            
-            data_cntr++;
-        }
-
-    }
-*/
 }
 
 /**
@@ -435,39 +403,5 @@ void setFlashOn(){
  */
 void setFlashOff(){
     digitalWrite(PIN_LED_FLASH, LOW);
-}
-
-/**
- * live cam
- */
-void liveCam(){
-   char buff[100];
-   size_t outlen;
-   uint8_t i;
-   uint8_t head[2];
-   uint8_t packet[1500];
-
-   //capture a frame
-   camera_fb_t *fb = esp_camera_fb_get();
-   if (!fb) {
-      Serial.println("Frame buffer could not be acquired");
-      return;
-   } else {
-      // prvnich 14 radek ignorujeme, pak 70 radek (v jednom paketu je 7 radek)
-      for(i = 0; i < 10; i++){
-        packet[0] = 0xF0;
-        packet[1] = i;
-
-        memcpy(packet + 2, fb->buf + ((i + 2) * IMG_PACKET_LEN), IMG_PACKET_LEN);
-
-        Udp.beginPacket("192.168.4.1", REMOTE_UDP_PORT);
-        Udp.write(packet, IMG_PACKET_LEN + 2); 
-        Udp.endPacket();
-
-        delayMicroseconds(4);
-      }
-   }
-
-  esp_camera_fb_return(fb);
 }
 
