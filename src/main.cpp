@@ -67,22 +67,28 @@ unsigned long servo_last;
 #define MOTOR_MIN_PWM 250
 
 // kolik pixelu dava kamera
-#define IMG_CAM_WIDTH       96
+#define IMG_CAM_WIDTH       160
 
 // jakou sirku obrazu posilam
-#define IMG_OUT_WIDTH       96
+#define IMG_OUT_WIDTH       128
 
 // o kolik orezavam
-#define IMG_CROP_SKIP       0
+#define IMG_CROP_SKIP       64
+
+// kolik radek je v jednom packetu
+#define IMG_PACKET_LINES    5
 
 // 7 radek obrazu o sirce 96px 
-#define IMG_PACKET_LEN      96 * 7 * 2
+#define IMG_PACKET_LEN      IMG_OUT_WIDTH * IMG_PACKET_LINES * 2
 
 // kolik ma jedna radka co posilam
 #define IMG_LENGTH_LINE     IMG_OUT_WIDTH * 2
 
 // orez nahore - 14 prvnich radek pryc
 #define IMG_CROP_TOP        (IMG_CAM_WIDTH * 2 * 14) + (IMG_CROP_SKIP / 2)
+
+// kolik packetu posilam
+#define IMG_PACKET_CNT      15
 
 // packet s rizenim
 typedef struct mikulControls {
@@ -186,7 +192,7 @@ void CameraTask(void *parameter)
         millis_act = millis();
 
         // posilani obrazu v intervalu
-        if ((millis_act - millis_last) >= PHOTO_DELAY) {
+        //if ((millis_act - millis_last) >= PHOTO_DELAY) {
             
             //capture a frame
             camera_fb_t *fb = esp_camera_fb_get();
@@ -194,7 +200,7 @@ void CameraTask(void *parameter)
                 ptr_fbuf = fb->buf + IMG_CROP_TOP;
 
                 // prvnich 14 radek ignorujeme, pak 70 radek (v jednom paketu je 7 radek)
-                for(i = 0; i < 10; i++){
+                for(i = 0; i < IMG_PACKET_CNT; i++){
 
                     // hlavicka packetu
                     packet[0] = 0xF0;
@@ -204,7 +210,7 @@ void CameraTask(void *parameter)
                     ptr_pack = packet + 3;
 
                     //memcpy(packet + 3, fb->buf + ((i + 2) * IMG_PACKET_LEN), IMG_PACKET_LEN);
-                    for(j = 0; j < 7; j++){
+                    for(j = 0; j < IMG_PACKET_LINES; j++){
                         memcpy(ptr_pack, ptr_fbuf, IMG_LENGTH_LINE);
                         ptr_fbuf += IMG_LENGTH_LINE + IMG_CROP_SKIP;
                         ptr_pack += IMG_LENGTH_LINE;
@@ -214,16 +220,16 @@ void CameraTask(void *parameter)
                     Udp.write(packet, IMG_PACKET_LEN + 3); 
                     Udp.endPacket();
 
-                    vTaskDelay(3 / portTICK_PERIOD_MS);
+                    vTaskDelay(2 / portTICK_PERIOD_MS);
                 }
             }
             esp_camera_fb_return(fb);            
 
             millis_last = millis_act;
-        }
+        //}
 
         // malej delay
-        vTaskDelay(1 / portTICK_PERIOD_MS);
+        //vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 
@@ -319,7 +325,8 @@ void setup()
         while(1){ }
     }
 
-    config.frame_size = FRAMESIZE_96X96;
+    //config.frame_size = FRAMESIZE_96X96;
+    config.frame_size = FRAMESIZE_QQVGA;    // 160x120
     config.jpeg_quality = 5;
     config.fb_count = 1;
 
